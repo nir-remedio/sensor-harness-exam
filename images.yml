@@ -1,0 +1,13 @@
+# The images the suite runs against.
+#
+# This is the only file to change when the list grows. Adding an image adds a full
+# set of cases for it: no new test code, no second copy of a test file, no branch
+# inside a test.
+#
+# An image needs a shell, `uname` and `tail`, and nothing else. The harness copies
+# the sensor in at runtime, so no image has to be built or published first.
+#
+# Tags are pinned. `ubuntu:latest` would quietly change what the findings describe.
+images:
+  - ubuntu:22.04
+  - alpine:3.20

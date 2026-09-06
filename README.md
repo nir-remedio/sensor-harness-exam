@@ -1,148 +1,159 @@
 # Sensor Test Harness
 
-- **Time:** 90 minutes
-- **Stack:** Python 3.10+, pytest, Docker
+A pytest suite that runs the same tests against the sensor inside a container of every
+image in [`images.yml`](images.yml), and reports what each one did.
 
-## Background
+**The findings are the result of this exercise. They are in [FINDINGS.md](FINDINGS.md).**
+The assignment this answers is in [ASSIGNMENT.md](ASSIGNMENT.md).
 
-We ship an agent that runs on many Linux distributions. It behaves differently on each one. Today we learn about those differences from customers, not from CI.
-
-Your task is to build the first version of a cross-distro test harness. It runs the same tests against the agent inside several containers. It reports what happened on each.
-
-We give you the agent. You build everything around it.
-
-## Before the clock starts
-
-Pull these two images first:
-
-- `ubuntu:22.04`
-- `alpine:3.20`
-
-Download time is not part of the 90 minutes.
-
-## What we give you
-
-In `./sensor/` you get two files: `sensor-amd64` and `sensor-arm64`. Nothing else.
-
-The sensor supports three commands:
-
-| Command | Purpose |
+| Area | Stack |
 | --- | --- |
-| `sensor scan` | Runs a scan and prints a result |
-| `sensor alerts` | Prints current alerts |
-| `sensor logs` | Prints the agent log |
+| Language | Python 3.10+ |
+| Dependency manager | `uv` |
+| Test framework | `pytest`, with `pytest-timeout` as a backstop |
+| Containers | Docker CLI, driven from the host |
+| Lint and format | `ruff` |
 
-That is all we will tell you about it. Part of the task is to find out how it actually behaves. Run it. Read the exit codes. Read stdout and stderr, separately. Do not assume it is well behaved.
+## Quick start
 
-**The two files are the same program, built for two CPU architectures.** Pick the one that matches the container, and make that choice repeatable. Some hosts run the wrong file anyway, through emulation. Others refuse it. If the sensor does not start at all, look at your setup first. That failure is not a sensor defect, and it is not a defect in your harness.
+```bash
+# 1. Pull the images (not needed if you already have them; the suite pulls a missing
+#    one itself, but a cold pull inside the run is slow and easy to misread).
+docker pull ubuntu:22.04
+docker pull alpine:3.20
 
-**The output content changes on every run.** Two runs of the same command in the same container do not print the same lines. A test that expects a payload you saw once is the wrong test. Assert on the shape of the output, and on the rules that must hold every time.
+# 2. Run the whole suite. This is the single command.
+uv run pytest
+# → 5 failed, 13 passed in ~37s
+```
 
-## What "works" means here
+> **Five failures are the expected result, not a broken harness.** Each one is a sensor
+> defect, named with its distro and command in [FINDINGS.md](FINDINGS.md). Do not read a
+> green run as success here — a suite where everything passed would mean the tests
+> stopped looking.
 
-The sensor misbehaves. It misbehaves on both distros, and not in the same way on each. For one distro, the same command misbehaves the same way every time. To find out what, where and how is the exam.
+`uv` builds the virtual environment on first run. Without `uv`:
 
-Not every command works on every image. One might work on neither.
+```bash
+python3 -m venv .venv && .venv/bin/pip install -e '.[dev]' && .venv/bin/pytest
+```
 
-So read this part carefully.
+## What is in here
 
-**A test that fails because the sensor is broken is a correct result.** Do not edit the test until it goes green. Do not delete it. Do not weaken the assertion. Report it.
+| Path | Purpose |
+| --- | --- |
+| [`images.yml`](images.yml) | **The image list.** The only file to change to add an image. |
+| [`sensor/`](sensor/) | The two binaries, exactly as given. Never modified. |
+| [`harness/container.py`](harness/container.py) | Starts a container, installs the sensor, runs one command, captures the result. |
+| [`harness/images.py`](harness/images.py) | Reads the list and builds the slug that names an image in a test id. |
+| [`harness/paths.py`](harness/paths.py) | Finds the repo root and the right sensor binary. |
+| [`tests/conftest.py`](tests/conftest.py) | Applies the image axis, the preflight, and the container fixture. |
+| [`tests/test_sensor.py`](tests/test_sensor.py) | The seven tests. |
+| [FINDINGS.md](FINDINGS.md) | What the run found. |
 
-We grade two things:
+## Where the image list lives
 
-1. **The harness works.** One command runs the whole suite. The run finishes. It never hangs. It always gives a report, for both distros.
-2. **The findings are right.** Each defect you found is named, with the distro, the command and the evidence.
+[`images.yml`](images.yml), at the repo root.
 
-We do not score the number of green tests. A suite where everything passes tells us that you did not look.
+```yaml
+images:
+  - ubuntu:22.04
+  - alpine:3.20
+```
 
-You may mark a known sensor defect as an expected failure. If you do, name the defect in the marker and in your findings. A marker with no reason reads as a hidden failure.
+Adding an image adds a full set of cases for it. Nothing else moves: no new test code,
+no second copy of a test file, no branch inside a test. Six images tomorrow is six lines
+in this file.
 
-## What to build
+The image axis is applied once, in `pytest_generate_tests`, so no test declares it. Each
+image's slug goes into every test id, which is why a failure line reads
+`test_scan_writes_nothing_to_stderr[alpine-3.20]` and says where it failed.
 
-### 1. The sensor, inside the containers
+Prove it without editing anything:
 
-The sensor must run inside a container of each distro:
+```bash
+uv run pytest --collect-only -q --sensor-images "ubuntu:22.04,alpine:3.20,debian:12"
+# → 27 tests collected
+```
 
-- `ubuntu:22.04`
-- `alpine:3.20`
+An image needs a shell, `uname` and `tail`. Nothing else. Tags are pinned, because
+`ubuntu:latest` would quietly change what the findings describe.
 
-Every command must be exercised inside every container. Not on your host.
+## How the sensor gets into the container
 
-How the binary gets into the container is your decision. We do not tell you. More than one method works. Choose one, make it repeatable, and write down what you did.
+`docker cp`, into a container started from the stock image. No Dockerfile, no build, no
+registry.
 
-Both distros must work. The list must also be cheap to grow. Assume we give your harness a list of six images tomorrow. Only the list may change: no new test code, no second copy of a test file, no new branch inside a test. Tell us in your README where the list lives.
+1. `docker run --detach <image> tail -f /dev/null` holds a bare image open.
+2. `docker exec <container> uname -m` asks the container which architecture it is.
+3. `docker cp sensor/sensor-<arch> <container>:/usr/local/bin/sensor` installs it.
+4. Tests call `docker exec <container> sensor <command>`.
 
-### 2. The harness
+**The architecture comes from inside the container, never from the host.** An amd64
+image running under emulation on an arm64 host answers `x86_64`, and `sensor-amd64` is
+the build it can actually execute. Asking the host would get that backwards. `uname -m`
+answers are mapped in `_ARCH_BY_MACHINE`; a machine name with no build raises, naming
+the image.
 
-A pytest suite that runs every test against every distro.
+The binaries are only ever read. `git status sensor/` stays clean across a run.
 
-Requirements:
+**A container per test**, not per image. This is the most expensive decision in the
+harness, at about 0.2 s of setup per test. It is worth it: the sensor keeps state inside
+the container, so `alerts` reports what a `scan` earlier in the same container stored.
+A fresh container is what makes "empty before any scan" and "reports a prior scan" two
+honest tests rather than two orderings of one, and it needs no reset trick.
 
-- Tests are written once and run against every image. Two copies of the same test file is not acceptable.
-- Use a fixture to provide the container or the distro under test.
-- Use `pytest.mark.parametrize` where it fits. Do not force it.
-- The distro must appear in the test ID, so a failure report tells us where it failed.
-- Every call to the sensor has a timeout. A test that waits forever never reports.
-- Running the full suite takes one command. Document it in your README.
+## Harness design choice
 
-The whole suite should finish in a couple of minutes. If it takes much longer, something is waiting.
+**Approach B: pytest runs on the host and drives the containers from outside.**
 
-**Harness design choice.** There are two reasonable approaches:
+`alpine:3.20` ships no Python and `ubuntu:22.04` ships no pip, so approach A means
+building a Python toolchain into every image. That is setup cost that grows with the
+image list, and it changes the thing under test — the sensor would no longer be running
+on a stock image.
 
-- **A:** Install `pytest` inside each image and run the tests there.
-- **B:** Run `pytest` on the host and drive the containers from outside.
+Driving from outside also keeps the reporter alive when the sensor does not come back.
+The host process owns the timeout and can force-remove the container. A pytest running
+inside a wedged container has nobody left to report. Since one of the three commands
+turns out never to return, that is not a hypothetical.
 
-Pick one. Write two or three sentences in your README on why. We care about the reasoning, not the choice. There is no reference image, so count the setup cost of your choice before you commit to it.
+## How it is kept from hanging
 
-### 3. The tests
+The suite must always produce a report. Four things guarantee it:
 
-5 to 8 tests in total. Quality over volume.
+- Every call out to `docker` carries a timeout. A sensor command gets 15 s; docker's own
+  bookkeeping gets 60 s; a cold pull gets 300 s. The numbers and their reasoning are at
+  the top of [`harness/container.py`](harness/container.py).
+- A sensor call that overruns returns a `CommandResult` with `timed_out` set, rather than
+  raising. A hang is a finding for a test to report, not an error that ends the run. It
+  is never retried.
+- Teardown uses `docker rm --force`. Killing the `docker exec` client does **not** kill
+  the sensor inside the container, so the force removal is what actually ends a command
+  still sleeping in there. `docker stop` would wait out its grace period first.
+- `pytest-timeout` sits underneath at 120 s per test, and should never fire. It is
+  deliberately left on the default method rather than `--timeout-method=thread`: the
+  thread method kills through `os._exit` and skips teardown, which would leak a container
+  every time it fired. A session finalizer sweeps any `sensor-harness-*` container that
+  survives anyway.
 
-Cover the behaviour that is worth checking. Some things to think about:
+Wall clock is about 37 s for 18 cases. 30 s of that is the two cases that wait out the
+15 s timeout on the command that never returns.
 
-- What is a real success for each command, beyond exit code 0?
-- What happens when a command produces no output?
-- What happens when a command does not finish?
-- What does the sensor write to stderr, and does your test notice?
-- Does one command need another command to run first?
-- What would still pass if the sensor were completely broken?
+## Why there are no xfail markers
 
-Each test needs a clear name that says which behaviour it verifies.
+Every failure in this suite is a real sensor defect that reproduces on every run. Marking
+them `xfail` would turn the report green and move the findings into marker strings. The
+assignment allows the marker; it is not the right tool when the defects **are** the
+deliverable. The five failures and [FINDINGS.md](FINDINGS.md) say the same thing, and the
+suite output is the part nobody can skip reading.
 
-## Constraints
+## Common commands
 
-- Python 3.10 or later, pytest, Docker.
-- Do not modify the sensor executable.
-- No authentication, no CI config, no production concerns.
-
-Keep the last 10 minutes for the write-up. The findings are what we read first.
-
-## What to submit
-
-1. The code. The harness, the tests, and whatever you use to put the sensor in a container. Any sensible structure.
-
-2. A README with:
-
-   - How to prepare the containers.
-   - The single command that runs the suite.
-   - Where the list of images lives.
-   - Your harness design choice, and why.
-
-3. A findings section, in the README or in a separate file. This is the main result of the exam. Give us one row for each difference you found:
-
-   | Distro | Command | Expected | Observed | Test that reports it |
-   | --- | --- | --- | --- | --- |
-
-   Then add:
-
-   - Which tests fail, where, and what each failure means.
-   - Anything about the sensor that surprised you.
-
-   Short entries are fine. Be exact about the distro and the command.
-
-4. A short reflection (4 to 6 sentences):
-
-   - What you built first, second and third, and why in that order.
-   - One thing you learned about the sensor by running it, not by reading about it.
-   - One behaviour you chose to test, and one you chose not to test. Why.
-   - One moment where you corrected or overrode what an AI tool produced.
+```bash
+uv run pytest                                # the whole suite, both images
+uv run pytest -k alpine-3.20                 # one image
+uv run pytest -k TestLogs                    # one behaviour, every image
+uv run pytest --sensor-images ubuntu:24.04   # an image that is not in the list
+uv run ruff check . && uv run ruff format .  # lint and format
+docker ps -a --filter name=sensor-harness    # should be empty after any run
+```

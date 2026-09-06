@@ -1,0 +1,67 @@
+[project]
+name = "sensor-harness"
+version = "0.1.0"
+description = "Cross-distro test harness for the sensor agent."
+requires-python = ">=3.10"
+dependencies = [
+    "pytest>=8.0",
+    "pytest-timeout>=2.3",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "loguru>=0.7",
+]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.6"]
+
+[tool.uv]
+# The harness is a test suite, not a distributable package. Without this uv tries to
+# build `sensor-harness` from source and fails: there is no build backend, on purpose.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `harness` sits at the repo root next to `tests`, and there is no src layout to install.
+pythonpath = ["."]
+addopts = "-v -ra --strict-markers --tb=short --durations=10"
+
+# Backstop only. Every docker call already carries its own, much tighter, timeout
+# (15s for a sensor command, 60s for docker's own bookkeeping), so this should never
+# fire. Deliberately left on pytest-timeout's default method rather than `thread`:
+# the thread method kills via os._exit and skips teardown, which would leak a
+# container for every test it fired on.
+timeout = 120
+
+log_cli = true
+log_cli_level = "INFO"
+log_cli_format = "%(asctime)s | %(levelname)-8s | %(message)s"
+log_cli_date_format = "%H:%M:%S"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "RUF", "SIM", "PTH", "D"]
+# S101: pytest assertions are the point of this repository.
+# S603: every subprocess call here is a fixed argv list; `shell=True` is never used.
+# S607: `docker` is resolved from PATH on purpose. Docker Desktop installs the client
+#       to /usr/local/bin on macOS and ~/.docker/bin when it manages its own symlinks,
+#       so a hardcoded absolute path would be wrong on most machines that run this.
+# D1xx: missing-docstring rules are off; the shape of a docstring that exists is not.
+ignore = [
+    "S101",
+    "S603",
+    "S607",
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D105",
+    "D106",
+    "D107",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"

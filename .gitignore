@@ -1,0 +1,9 @@
+# uv builds this on the first `uv run`. uv.lock is committed instead, so a run is
+# reproducible without carrying the environment itself.
+.venv/
+
+__pycache__/
+*.py[cod]
+
+.pytest_cache/
+.ruff_cache/
